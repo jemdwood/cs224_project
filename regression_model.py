@@ -6,6 +6,8 @@ import time
 import csv
 import pandas as pd
 import nolearn
+import random
+import math
 from encodings.punycode import digits
 from lasagne.nonlinearities import softmax
 from lasagne.updates import apply_momentum
@@ -26,7 +28,9 @@ def feature_extractions():
      "inverse current pop": lambda x: 1.0/x["cur_pop"],
      "inverse square current pop": lambda x: 1.0/(x["cur_pop"]**2),
      "inverse last pop": lambda x: 1.0/x["last_pop"],
-     "inverse square last pop": lambda x: 1.0/(x["last_pop"]**2)
+     "inverse square last pop": lambda x: 1.0/(x["last_pop"]**2),
+     "product": lambda x: x["last_pop"] * x["cur_pop"],
+     "norm" : lambda x: math.sqrt(x["last_pop"]**2 + x["cur_pop"]**2)
     }
 
 def preprocessed_data():
@@ -88,14 +92,14 @@ def load_xs_and_ys():
     for i in infos:
         ys.append(i["movers"])
         xs.append(featurize(i))
-    write_preprocessed_csv(xs, ys)
+    write_preprocessed_csv(*shuffle((xs, ys)))
     return xs, ys
 
 def read_file_building():
-    xs, ys = load_xs_and_ys() #actually throw away and just use the written file. Oopsies
-    df = pd.read_csv(preprocessed_data())
+    load_xs_and_ys() #actually throw away and just use the written file. Oopsies
+    df = pd.read_csv('toy_data.csv') #preprocessed_data())
     X = df.values.copy()
-    X, y = X[:, 0:-1].astype(np.float64), X[:, -1].astype(np.int32)
+    X, y = X[:, 0:-1].astype(np.float64), X[:, -1].astype(np.float64)
     scaler = StandardScaler()
     X = scaler.fit_transform(X)
     return X, y, scaler
@@ -120,11 +124,12 @@ def partition_data(xs, ys):
 
 def get_loss_function(scaler):
     #------squared loss
+    max = scaler.data_range
+    min = scaler.data_min
     def loss_function (a,b):
-        print "\/" # TODO
-        print a-b
-        transformed= a#scaler.transform(np.array(a)[0])
-        return (transformed-b)**2
+        transformed_a = 1.0*(a-min)/(max-min) # TODO Experiment
+        transformed_b = 1.0*(b-min)/(max-min) 
+        return (transformed_a-transformed_b)**2
     return loss_function
 
 #This code pulled from Lasagne examples: https://github.com/Lasagne/Lasagne/blob/master/examples/mnist.py
@@ -140,12 +145,18 @@ def iterate_minibatches(inputs, targets, batchsize, shuffle=False):
             excerpt = slice(start_idx, start_idx + batchsize)
         yield inputs[excerpt], targets[excerpt]
 
+#shuffles both arrays the same way (index-pairs remain paired just at a different index)
+def shuffle(dataset):
+    x, y = dataset
+    rg = range(len(x))
+    random.shuffle(rg)
+    return [x[i] for i in rg], [y[i] for i in rg]
 
 def build_net(train, test, y_scaler):
     xs_test, ys_test = test
     xs_train, ys_train = train
     num_features = xs_train.shape[1]
-    assert(num_features == len(feature_extractions().keys()))
+    #assert(num_features == len(feature_extractions().keys()))
     loss_function = get_loss_function(y_scaler)
     
     input_var = theano.tensor.dmatrix('inputs')
@@ -162,7 +173,7 @@ def build_net(train, test, y_scaler):
     c_l_recur_b = las.layers.RecurrentLayer #Try doing custom
     c_output = las.layers.DenseLayer
     #layers = [('input', c_l_in), ('a', c_l_recur_a), ('h', c_l_hidden), ('b', c_l_recur_b),('output', c_output)]
-    layers = [('input', c_l_in), ('h', c_l_hidden), ('h2', c_l_hidden), ('output', c_output)]
+    layers = [('input', c_l_in), ('h', c_l_hidden), ('h2', c_l_hidden),('h3', c_l_hidden), ('output', c_output)]
 
 
     #o = binary_hinge_loss
@@ -172,27 +183,33 @@ def build_net(train, test, y_scaler):
                  input_shape = (None, num_features),
 #                  input_input_var = input_var,
 #                  a_num_units = 50,
-                  h_num_units = 200,
-                  h_nonlinearity =  las.nonlinearities.softmax, 
-                  h_W = las.init.Normal(0.1), #experiment
-                  h2_num_units = 200,
-                  h2_nonlinearity =  las.nonlinearities.softmax, 
+                  h_num_units = 100,
+                  #h_nonlinearity =  las.nonlinearities.softmax, 
+                  h_W = las.init.Normal(1000), #experiment
+                  h2_num_units = 100,
+                  h3_num_units = 100,
+                  #h2_nonlinearity =  las.nonlinearities.softmax, 
 #                  b_num_units = 4,
-                 output_num_units=50,
-                 output_nonlinearity=softmax,
+                 output_num_units=1,
+                 #output_nonlinearity=softmax,
                  
                  objective_loss_function = loss_function, #vs squared_loss or custom function
                  update=nesterov_momentum,
-                 update_learning_rate=0.3,
-                 update_momentum=0.1,
-                 
+                 update_learning_rate=0.1,
+                 update_momentum=0.2,
                  
                  train_split=nolearn.lasagne.TrainSplit(eval_size=0.2),
                  verbose=1,
-                 max_epochs=5)
+                 max_epochs=50)
     print "Begin training"
     net0.fit(xs_train, ys_train)
-    
+    predicts = net0.predict([[30.0,-1.5,4.5,3087],[1.0,1.0,1.0,1.0],[5.0,0.1,5.0,1000]])
+    print "prediction: %f - 93864 == %f \n %f - 3 == %f \n %f - 1000000 == %f" % (predicts[0], (predicts[0]-93864)*1.0/93864, predicts[1], (predicts[1] - 3)*1.0/3, predicts[2], (predicts[2]-1000000)/1000000)
+    print "test score: %f" % (net0.score(xs_test,ys_test))
+    print net0.score(xs_train,ys_train)
+    print "random score: %f" % (net0.score(xs_test,ys_train[0:len(xs_test)]))
+    print "random score: %f" % (net0.score(xs_train[0:len(ys_test)],ys_test))
+    print net0.layers
     
     
     
@@ -272,11 +289,11 @@ def build_net(train, test, y_scaler):
 
 x, y , scaler = read_file_building()
 encoder = LabelEncoder()
-y = encoder.fit_transform(y).astype(np.int32)
-y_scaler = StandardScaler()# MinMaxScaler((0,10.0))
-y = y_scaler.fit_transform(y)
+y = encoder.fit_transform(y).astype(np.float32)
+y_scaler = MinMaxScaler((0,5))
+y_scaler.fit(y)
+#y = y_scaler.transform(y),
 #y += #NEED TO MAKE IT SO NO NEGATIVE
-
 build_net(*partition_data(x, y), y_scaler = y_scaler)
     
 
