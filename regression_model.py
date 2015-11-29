@@ -122,6 +122,17 @@ def partition_data(xs, ys):
     test = [xs[partition:], ys[partition:]]
     return train, test
 
+
+def get_sign(a, b):
+    if theano.tensor.eq(a,b):
+        return 0.0
+    elif theano.tensor.gt(a,b):
+        return 1.0
+    elif theano.tensor.lt(a,b):
+        return -1.0
+    else:
+        print "ERROR\n\nERROR\n\nERROR\n\n"
+
 def get_loss_function(scaler):
     #------squared loss
     max = scaler.data_range
@@ -129,9 +140,7 @@ def get_loss_function(scaler):
     def loss_function (a,b):
         transformed_a = 1.0*(a-min)/(max-min) # TODO Experiment
         transformed_b = 1.0*(b-min)/(max-min) 
-        print (transformed_a - transformed_b)[0]
-        print type(transformed_a- transformed_b)
-        return np.sign(transformed_a-transformed_b)*(transformed_a-transformed_b)**2
+        return (transformed_a-transformed_b)**2
     return loss_function
 
 #This code pulled from Lasagne examples: https://github.com/Lasagne/Lasagne/blob/master/examples/mnist.py
@@ -187,7 +196,7 @@ def build_net(train, test, y_scaler):
 #                  a_num_units = 50,
                   h_num_units = 100,
                   #h_nonlinearity =  las.nonlinearities.softmax, 
-                  h_W = las.init.Normal(1000), #experiment
+                  h_W = las.init.Normal(.3), #experiment
                   h2_num_units = 100,
                   h3_num_units = 100,
                   #h2_nonlinearity =  las.nonlinearities.softmax, 
@@ -206,7 +215,13 @@ def build_net(train, test, y_scaler):
     print "Begin training"
     net0.fit(xs_train, ys_train)
     predicts = net0.predict([[30.0,-1.5,4.5,3087],[1.0,1.0,1.0,1.0],[5.0,0.1,5.0,1000]])
-    print "prediction: %f - 93864 == %f \n %f - 3 == %f \n %f - 1000000 == %f" % (predicts[0], (predicts[0]-93864)*1.0/93864, predicts[1], (predicts[1] - 3)*1.0/3, predicts[2], (predicts[2]-1000000)/1000000)
+    answers = [93864, 3, 1000000]
+    print "\nPrediction: \n %f - %f == %f \n %f - %f == %f \n %f - %f == %f" % (predicts[0], answers[0], (predicts[0]-answers[0])*1.0/answers[0], predicts[1],answers[1], (predicts[1] - answers[1])*1.0/answers[1], predicts[2], answers[2], (predicts[2]-answers[2])/answers[2])
+    print "\n\n with transformation ----"
+    predicts = map(lambda x: y_scaler.inverse_transform([x]), predicts)
+    predicts = [y[0] for y in predicts]
+    print "prediction: %f - %f == %f \n %f - %f == %f \n %f - %f == %f" % (predicts[0], answers[0], (predicts[0]-answers[0])*1.0/answers[0], predicts[1],answers[1], (predicts[1] - answers[1])*1.0/answers[1], predicts[2], answers[2], (predicts[2]-answers[2])/answers[2])
+    print "\nScores----------"
     print "test score: %f" % (net0.score(xs_test,ys_test))
     print net0.score(xs_train,ys_train)
     print "random score: %f" % (net0.score(xs_test,ys_train[0:len(xs_test)]))
