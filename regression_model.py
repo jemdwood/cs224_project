@@ -129,7 +129,9 @@ def get_loss_function(scaler):
     def loss_function (a,b):
         transformed_a = 1.0*(a-min)/(max-min) # TODO Experiment
         transformed_b = 1.0*(b-min)/(max-min) 
-        return (transformed_a-transformed_b)**2
+        print (transformed_a - transformed_b)[0]
+        print type(transformed_a- transformed_b)
+        return np.sign(transformed_a-transformed_b)*(transformed_a-transformed_b)**2
     return loss_function
 
 #This code pulled from Lasagne examples: https://github.com/Lasagne/Lasagne/blob/master/examples/mnist.py
