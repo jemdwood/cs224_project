@@ -14,30 +14,32 @@ from lasagne.updates import apply_momentum
 from lasagne.updates import nesterov_momentum
 #from lasagne.objectives import binary_hinge_loss
 from sklearn.preprocessing.label import LabelEncoder
+from sklearn.preprocessing import Normalizer
 from sklearn.preprocessing import StandardScaler
 from sklearn.preprocessing import MinMaxScaler
 from nolearn.lasagne import NeuralNet
-from numpy import float64
+from numpy import float64, inf
 from lasagne.objectives import binary_hinge_loss
 
 
 def feature_extractions():
-    return {"current population": lambda x: x["cur_pop"],
-            "last population": lambda x: x["last_pop"],
-     "extra": lambda x: x["extra"],
-     "inverse current pop": lambda x: 1.0/x["cur_pop"],
-     "inverse square current pop": lambda x: 1.0/(x["cur_pop"]**2),
-     "inverse last pop": lambda x: 1.0/x["last_pop"],
-     "inverse square last pop": lambda x: 1.0/(x["last_pop"]**2),
-     "product": lambda x: x["last_pop"] * x["cur_pop"],
-     "norm" : lambda x: math.sqrt(x["last_pop"]**2 + x["cur_pop"]**2)
+    return {"1 current population": lambda x: x["cur_pop"],
+            "2 last population": lambda x: x["last_pop"],
+     "3 extra": lambda x: x["extra"],
+     "4 inverse current pop": lambda x: 1.0/x["cur_pop"],
+     "5 inverse square current pop": lambda x: 1.0/(x["cur_pop"]**2),
+     "6 inverse last pop": lambda x: 1.0/x["last_pop"],
+     "7 inverse square last pop": lambda x: 1.0/(x["last_pop"]**2),
+     "8 product": lambda x: x["last_pop"] * x["cur_pop"],
+     "9 norm" : lambda x: math.sqrt(x["last_pop"]**2 + x["cur_pop"]**2)
     }
 
 def preprocessed_data():
     return "preprocessed_data.csv"
 
 def featurize(i):
-    a = np.array(map(lambda fn: fn(i), feature_extractions().values()))
+    featurize_fns = map(lambda x: x[1], sorted(feature_extractions().items(), key = lambda x: x[0][0], reverse= True))
+    a = np.array(map(lambda fn: fn(i), featurize_fns))
     return a
 
 # res moved to
@@ -56,10 +58,6 @@ def supplement(info):
     pass
     # TODO
     return info
-
-def normalize_arrays(xs):
-    # TODO / might not be needed, investigate
-    pass
 
 def write_preprocessed_csv(xs,ys):
     with open(preprocessed_data(), "wb") as csvfile:
@@ -100,10 +98,27 @@ def read_file_building():
     df = pd.read_csv('toy_data.csv') #preprocessed_data())
     X = df.values.copy()
     X, y = X[:, 0:-1].astype(np.float64), X[:, -1].astype(np.float64)
-    scaler = StandardScaler()
+    return X, y
+
+def prep_y(y, X):
+    for i, x in enumerate(X):
+        res = 1.0*y[i] / (x[0]+1.0) #divides by the first feature, which is currently the population of the last city (smoothed with +1) Does this to remove the step of training where you have to multiply the output of the net by the city population
+        if res == np.inf or res == -1 * np.inf:
+            print x
+            print y[i]
+            print "INF Problem in Y prepping"
+        y[i] = res
+    y_scaler = MinMaxScaler((-3,5))
+    y_scaler.fit(y)
+    y = y_scaler.transform(y)
+    return y, y_scaler
+    
+def prep_x(X):
+    scaler = MinMaxScaler((-3,5)) #<--------------------
     X = scaler.fit_transform(X)
-    return X, y, scaler
-        
+    return X
+           
+ 
 def extract_line_info(line):
     #HARDCODING TO BE REMOVED
     last_res_pop = int(line[259:267])
@@ -112,7 +127,7 @@ def extract_line_info(line):
     last_res_county_code = line[9:12] #should be three digits
     movers = int(line[373:380])
     extra = int(line[309:316])
-    return {"extra": extra, 'cur_pop': cur_res_pop, "last_pop": last_res_pop, "curr_res": curr_res_county_code, "last_res": last_res_county_code, "movers": movers}
+    return {"extra": extra, 'last_pop': last_res_pop, 'cur_pop': cur_res_pop, "curr_res": curr_res_county_code, "last_res": last_res_county_code, "movers": movers}
 
 # THIS Needs to be improved to train off of a year at a time and then predict for the next year
 def partition_data(xs, ys):
@@ -140,7 +155,9 @@ def get_loss_function(scaler):
     def loss_function (a,b):
         transformed_a = 1.0*(a-min)/(max-min) # TODO Experiment
         transformed_b = 1.0*(b-min)/(max-min) 
-        return get_sign(transformed_a,transformed_b)*(transformed_a-transformed_b)**2
+        multiplier = 1.0#*get_sign(transformed_a,transformed_b)
+        res = multiplier * np.abs(a-b)# **2#get_sign(transformed_a,transformed_b)*(transformed_a-transformed_b)**2
+        return res
     return loss_function
 
 #This code pulled from Lasagne examples: https://github.com/Lasagne/Lasagne/blob/master/examples/mnist.py
@@ -164,6 +181,8 @@ def shuffle(dataset):
     return [x[i] for i in rg], [y[i] for i in rg]
 
 def build_net(train, test, y_scaler):
+    print dir(y_scaler)
+    print "\n"
     xs_test, ys_test = test
     xs_train, ys_train = train
     num_features = xs_train.shape[1]
@@ -173,15 +192,16 @@ def build_net(train, test, y_scaler):
     input_var = theano.tensor.dmatrix('inputs')
     target_var = theano.tensor.dvector('targets')
     
-    l_in = las.layers.InputLayer((len(xs_test), len(xs_test[0])), input_var=input_var)
-    l_recur_a = las.layers.RecurrentLayer(l_in, num_units= 50)
-    l_hidden = las.layers.DenseLayer(l_recur_a, num_units = 4,nonlinearity = las.nonlinearities.softmax, W=las.init.Normal(0.1))
-    l_recur_b = las.layers.RecurrentLayer(l_hidden, num_units = 4) #Try doing custom
+#     l_in = las.layers.InputLayer((len(xs_test), len(xs_test[0])), input_var=input_var)
+#     l_recur_a = las.layers.RecurrentLayer(l_in, num_units= 50)
+#     l_hidden = las.layers.DenseLayer(l_recur_a, num_units = 4,nonlinearity = las.nonlinearities.softmax, W=las.init.Normal(0.1))
+#     l_recur_b = las.layers.RecurrentLayer(l_hidden, num_units = 4) #Try doing custom
     # -----pure classes below
     c_l_in = las.layers.InputLayer
     c_l_recur_a = las.layers.RecurrentLayer
     c_l_hidden = las.layers.DenseLayer
     c_l_recur_b = las.layers.RecurrentLayer #Try doing custom
+    c_expression_layer = las.layers.special.ExpressionLayer
     c_output = las.layers.DenseLayer
     #layers = [('input', c_l_in), ('a', c_l_recur_a), ('h', c_l_hidden), ('b', c_l_recur_b),('output', c_output)]
     layers = [('input', c_l_in), ('h', c_l_hidden), ('h2', c_l_hidden),('h3', c_l_hidden), ('output', c_output)]
@@ -189,29 +209,30 @@ def build_net(train, test, y_scaler):
 
     #o = binary_hinge_loss
     net0 = NeuralNet(layers=layers,
-                     regression = True,
-                     y_tensor_type=  theano.tensor.type.TensorType('float64', (False,True)) ,
-                 input_shape = (None, num_features),
+                     regression=True,
+                     y_tensor_type=theano.tensor.type.TensorType('float64', (False, True)) ,
+                 input_shape=(None, num_features),
 #                  input_input_var = input_var,
 #                  a_num_units = 50,
-                  h_num_units = 100,
-                  #h_nonlinearity =  las.nonlinearities.softmax, 
-                  h_W = las.init.Normal(1000), #experiment
-                  h2_num_units = 100,
-                  h3_num_units = 100,
-                  #h2_nonlinearity =  las.nonlinearities.softmax, 
+              h_num_units=50,
+              
+              #h_nonlinearity =  las.nonlinearities.softmax, 
+              h2_num_units=20,
+              h3_num_units=20,
+              # h2_nonlinearity =  las.nonlinearities.softmax, 
 #                  b_num_units = 4,
+                 #e_function=expression_layer_fn,
                  output_num_units=1,
-                 #output_nonlinearity=softmax,
+                 # output_nonlinearity=softmax,
                  
-                 objective_loss_function = loss_function, #vs squared_loss or custom function
+                 objective_loss_function=loss_function,  
                  update=nesterov_momentum,
-                 update_learning_rate=0.1,
-                 update_momentum=0.2,
+                 update_learning_rate=0.001,
+                 update_momentum=0.3,
                  
                  train_split=nolearn.lasagne.TrainSplit(eval_size=0.2),
                  verbose=1,
-                 max_epochs=50)
+                 max_epochs=1000)
     print "Begin training"
     net0.fit(xs_train, ys_train)
     predicts = net0.predict([[30.0,-1.5,4.5,3087],[1.0,1.0,1.0,1.0],[5.0,0.1,5.0,1000]])
@@ -303,9 +324,9 @@ def build_net(train, test, y_scaler):
 #         test_acc / test_batches * 100))
 #     
 
-x, y , scaler = read_file_building()
-y_scaler = MinMaxScaler((0,5))
-y_scaler.fit(y)
+x, y  = read_file_building()
+x = prep_x(x)
+y, y_scaler = prep_y(y, x)
 #y = y_scaler.transform(y),
 #y += #NEED TO MAKE IT SO NO NEGATIVE
 build_net(*partition_data(x, y), y_scaler = y_scaler)
